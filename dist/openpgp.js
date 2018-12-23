@@ -23451,12 +23451,12 @@ CleartextMessage.prototype.getSigningKeyIds = function () {
  * @param  {Array<module:key.Key>} privateKeys private keys with decrypted secret key data for signing
  * @param  {Signature} signature             (optional) any existing detached signature
  * @param  {Date} date                       (optional) The creation time of the signature that should be created
- * @param  {Object} userId                   (optional) user ID to sign with, e.g. { name:'Steve Sender', email:'steve@openpgp.org' }
+ * @param  {Array} userIds                   (optional) user IDs to sign with, e.g. [{ name:'Steve Sender', email:'steve@openpgp.org' }]
  * @returns {Promise<module:cleartext.CleartextMessage>} new cleartext message with signed content
  * @async
  */
-CleartextMessage.prototype.sign = async function (privateKeys, signature = null, date = new Date(), userId = {}) {
-  return new CleartextMessage(this.text, (await this.signDetached(privateKeys, signature, date, userId)));
+CleartextMessage.prototype.sign = async function (privateKeys, signature = null, date = new Date(), userIds = []) {
+  return new CleartextMessage(this.text, (await this.signDetached(privateKeys, signature, date, userIds)));
 };
 
 /**
@@ -23464,15 +23464,15 @@ CleartextMessage.prototype.sign = async function (privateKeys, signature = null,
  * @param  {Array<module:key.Key>} privateKeys private keys with decrypted secret key data for signing
  * @param  {Signature} signature             (optional) any existing detached signature
  * @param  {Date} date                       (optional) The creation time of the signature that should be created
- * @param  {Object} userId                   (optional) user ID to sign with, e.g. { name:'Steve Sender', email:'steve@openpgp.org' }
+ * @param  {Array} userIds                   (optional) user IDs to sign with, e.g. [{ name:'Steve Sender', email:'steve@openpgp.org' }]
  * @returns {Promise<module:signature.Signature>}      new detached signature of message content
  * @async
  */
-CleartextMessage.prototype.signDetached = async function (privateKeys, signature = null, date = new Date(), userId = {}) {
+CleartextMessage.prototype.signDetached = async function (privateKeys, signature = null, date = new Date(), userIds = []) {
   const literalDataPacket = new _packet2.default.Literal();
   literalDataPacket.setText(this.text);
 
-  return new _signature.Signature((await (0, _message.createSignaturePackets)(literalDataPacket, privateKeys, signature, date, userId)));
+  return new _signature.Signature((await (0, _message.createSignaturePackets)(literalDataPacket, privateKeys, signature, date, userIds)));
 };
 
 /**
@@ -23755,7 +23755,7 @@ exports.default = {
    * @memberof module:config
    * @property {String} versionstring A version string to be included in armored messages
    */
-  versionstring: "OpenPGP.js v4.3.0",
+  versionstring: "OpenPGP.js v4.4.0",
   /**
    * @memberof module:config
    * @property {String} commentstring A comment string to be included in armored messages
@@ -23995,284 +23995,27 @@ Object.defineProperty(exports, "__esModule", {
   value: true
 });
 
+var _cfb = require('asmcrypto.js/dist_es5/aes/cfb');
+
+var _webStreamTools = require('web-stream-tools');
+
+var _webStreamTools2 = _interopRequireDefault(_webStreamTools);
+
 var _cipher = require('./cipher');
 
 var _cipher2 = _interopRequireDefault(_cipher);
 
+var _config = require('../config');
+
+var _config2 = _interopRequireDefault(_config);
+
+var _util = require('../util');
+
+var _util2 = _interopRequireDefault(_util);
+
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
 
-exports.default = {
-
-  /**
-   * This function encrypts a given plaintext with the specified prefixrandom
-   * using the specified blockcipher
-   * @param {Uint8Array} prefixrandom random bytes of block_size length
-   *  to be used in prefixing the data
-   * @param {String} cipherfn the algorithm cipher class to encrypt
-   *  data in one block_size encryption, {@link module:crypto/cipher}.
-   * @param {Uint8Array} plaintext data to be encrypted
-   * @param {Uint8Array} key key to be used to encrypt the plaintext.
-   * This will be passed to the cipherfn
-   * @param {Boolean} resync a boolean value specifying if a resync of the
-   *  IV should be used or not. The encrypteddatapacket uses the
-   *  "old" style with a resync. Encryption within an
-   *  encryptedintegrityprotecteddata packet is not resyncing the IV.
-   * @returns {Uint8Array} encrypted data
-   */
-  encrypt: function encrypt(prefixrandom, cipherfn, plaintext, key, resync) {
-    cipherfn = new _cipher2.default[cipherfn](key);
-    const block_size = cipherfn.blockSize;
-
-    const FR = new Uint8Array(block_size);
-    let FRE = new Uint8Array(block_size);
-
-    const new_prefix = new Uint8Array(prefixrandom.length + 2);
-    new_prefix.set(prefixrandom);
-    new_prefix[prefixrandom.length] = prefixrandom[block_size - 2];
-    new_prefix[prefixrandom.length + 1] = prefixrandom[block_size - 1];
-    prefixrandom = new_prefix;
-
-    let ciphertext = new Uint8Array(plaintext.length + 2 + block_size * 2);
-    let i;
-    let n;
-    let begin;
-    const offset = resync ? 0 : 2;
-
-    // 1.  The feedback register (FR) is set to the IV, which is all zeros.
-    for (i = 0; i < block_size; i++) {
-      FR[i] = 0;
-    }
-
-    // 2.  FR is encrypted to produce FRE (FR Encrypted).  This is the
-    //     encryption of an all-zero value.
-    FRE = cipherfn.encrypt(FR);
-    // 3.  FRE is xored with the first BS octets of random data prefixed to
-    //     the plaintext to produce C[1] through C[BS], the first BS octets
-    //     of ciphertext.
-    for (i = 0; i < block_size; i++) {
-      ciphertext[i] = FRE[i] ^ prefixrandom[i];
-    }
-
-    // 4.  FR is loaded with C[1] through C[BS].
-    FR.set(ciphertext.subarray(0, block_size));
-
-    // 5.  FR is encrypted to produce FRE, the encryption of the first BS
-    //     octets of ciphertext.
-    FRE = cipherfn.encrypt(FR);
-
-    // 6.  The left two octets of FRE get xored with the next two octets of
-    //     data that were prefixed to the plaintext.  This produces C[BS+1]
-    //     and C[BS+2], the next two octets of ciphertext.
-    ciphertext[block_size] = FRE[0] ^ prefixrandom[block_size];
-    ciphertext[block_size + 1] = FRE[1] ^ prefixrandom[block_size + 1];
-
-    if (resync) {
-      // 7.  (The resync step) FR is loaded with C[3] through C[BS+2].
-      FR.set(ciphertext.subarray(2, block_size + 2));
-    } else {
-      FR.set(ciphertext.subarray(0, block_size));
-    }
-    // 8.  FR is encrypted to produce FRE.
-    FRE = cipherfn.encrypt(FR);
-
-    // 9.  FRE is xored with the first BS octets of the given plaintext, now
-    //     that we have finished encrypting the BS+2 octets of prefixed
-    //     data.  This produces C[BS+3] through C[BS+(BS+2)], the next BS
-    //     octets of ciphertext.
-    for (i = 0; i < block_size; i++) {
-      ciphertext[block_size + 2 + i] = FRE[i + offset] ^ plaintext[i];
-    }
-    for (n = block_size; n < plaintext.length + offset; n += block_size) {
-      // 10. FR is loaded with C[BS+3] to C[BS + (BS+2)] (which is C11-C18 for
-      // an 8-octet block).
-      begin = n + 2 - offset;
-      FR.set(ciphertext.subarray(begin, begin + block_size));
-
-      // 11. FR is encrypted to produce FRE.
-      FRE = cipherfn.encrypt(FR);
-
-      // 12. FRE is xored with the next BS octets of plaintext, to produce
-      // the next BS octets of ciphertext.  These are loaded into FR, and
-      // the process is repeated until the plaintext is used up.
-      for (i = 0; i < block_size; i++) {
-        ciphertext[block_size + begin + i] = FRE[i] ^ plaintext[n + i - offset];
-      }
-    }
-
-    ciphertext = ciphertext.subarray(0, plaintext.length + 2 + block_size);
-    return ciphertext;
-  },
-
-  /**
-   * Decrypts the prefixed data for the Modification Detection Code (MDC) computation
-   * @param {String} cipherfn.encrypt Cipher function to use,
-   *  @see module:crypto/cipher.
-   * @param {Uint8Array} key Uint8Array representation of key to be used to check the mdc
-   * This will be passed to the cipherfn
-   * @param {Uint8Array} ciphertext The encrypted data
-   * @returns {Uint8Array} plaintext Data of D(ciphertext) with blocksize length +2
-   */
-  mdc: function mdc(cipherfn, key, ciphertext) {
-    cipherfn = new _cipher2.default[cipherfn](key);
-    const block_size = cipherfn.blockSize;
-
-    let iblock = new Uint8Array(block_size);
-    let ablock = new Uint8Array(block_size);
-    let i;
-
-    // initialisation vector
-    for (i = 0; i < block_size; i++) {
-      iblock[i] = 0;
-    }
-
-    iblock = cipherfn.encrypt(iblock);
-    for (i = 0; i < block_size; i++) {
-      ablock[i] = ciphertext[i];
-      iblock[i] ^= ablock[i];
-    }
-
-    ablock = cipherfn.encrypt(ablock);
-
-    const result = new Uint8Array(iblock.length + 2);
-    result.set(iblock);
-    result[iblock.length] = ablock[0] ^ ciphertext[block_size];
-    result[iblock.length + 1] = ablock[1] ^ ciphertext[block_size + 1];
-    return result;
-  },
-
-  /**
-   * This function decrypts a given ciphertext using the specified blockcipher
-   * @param {String} cipherfn the algorithm cipher class to decrypt
-   *  data in one block_size encryption, {@link module:crypto/cipher}.
-   * @param {Uint8Array} key Uint8Array representation of key to be used to decrypt the ciphertext.
-   * This will be passed to the cipherfn
-   * @param {Uint8Array} ciphertext to be decrypted
-   * @param {Boolean} resync a boolean value specifying if a resync of the
-   *  IV should be used or not. The encrypteddatapacket uses the
-   *  "old" style with a resync. Decryption within an
-   *  encryptedintegrityprotecteddata packet is not resyncing the IV.
-   * @returns {Uint8Array} the plaintext data
-   */
-  decrypt: function decrypt(cipherfn, key, ciphertext, resync) {
-    cipherfn = new _cipher2.default[cipherfn](key);
-    const block_size = cipherfn.blockSize;
-
-    const iblock = new Uint8Array(block_size);
-    let ablock = new Uint8Array(block_size);
-
-    let i;
-    let j;
-    let n;
-    let text = new Uint8Array(ciphertext.length - block_size);
-
-    /*  RFC4880: Tag 18 and Resync:
-     *  [...] Unlike the Symmetrically Encrypted Data Packet, no
-     *  special CFB resynchronization is done after encrypting this prefix
-     *  data.  See "OpenPGP CFB Mode" below for more details.
-     */
-
-    j = 0;
-    if (resync) {
-      for (i = 0; i < block_size; i++) {
-        iblock[i] = ciphertext[i + 2];
-      }
-      for (n = block_size + 2; n < ciphertext.length; n += block_size) {
-        ablock = cipherfn.encrypt(iblock);
-
-        for (i = 0; i < block_size && i + n < ciphertext.length; i++) {
-          iblock[i] = ciphertext[n + i];
-          if (j < text.length) {
-            text[j] = ablock[i] ^ iblock[i];
-            j++;
-          }
-        }
-      }
-    } else {
-      for (i = 0; i < block_size; i++) {
-        iblock[i] = ciphertext[i];
-      }
-      for (n = block_size; n < ciphertext.length; n += block_size) {
-        ablock = cipherfn.encrypt(iblock);
-        for (i = 0; i < block_size && i + n < ciphertext.length; i++) {
-          iblock[i] = ciphertext[n + i];
-          if (j < text.length) {
-            text[j] = ablock[i] ^ iblock[i];
-            j++;
-          }
-        }
-      }
-    }
-
-    n = resync ? 0 : 2;
-
-    text = text.subarray(n, ciphertext.length - block_size - 2 + n);
-
-    return text;
-  },
-
-  normalEncrypt: function normalEncrypt(cipherfn, key, plaintext, iv) {
-    cipherfn = new _cipher2.default[cipherfn](key);
-    const block_size = cipherfn.blockSize;
-
-    let blocki = new Uint8Array(block_size);
-    const blockc = new Uint8Array(block_size);
-    let pos = 0;
-    const cyphertext = new Uint8Array(plaintext.length);
-    let i;
-    let j = 0;
-
-    if (iv === null) {
-      for (i = 0; i < block_size; i++) {
-        blockc[i] = 0;
-      }
-    } else {
-      for (i = 0; i < block_size; i++) {
-        blockc[i] = iv[i];
-      }
-    }
-    while (plaintext.length > block_size * pos) {
-      const encblock = cipherfn.encrypt(blockc);
-      blocki = plaintext.subarray(pos * block_size, pos * block_size + block_size);
-      for (i = 0; i < blocki.length; i++) {
-        blockc[i] = blocki[i] ^ encblock[i];
-        cyphertext[j++] = blockc[i];
-      }
-      pos++;
-    }
-    return cyphertext;
-  },
-
-  normalDecrypt: function normalDecrypt(cipherfn, key, ciphertext, iv) {
-    cipherfn = new _cipher2.default[cipherfn](key);
-    const block_size = cipherfn.blockSize;
-
-    let blockp;
-    let pos = 0;
-    const plaintext = new Uint8Array(ciphertext.length);
-    const offset = 0;
-    let i;
-    let j = 0;
-
-    if (iv === null) {
-      blockp = new Uint8Array(block_size);
-      for (i = 0; i < block_size; i++) {
-        blockp[i] = 0;
-      }
-    } else {
-      blockp = iv.subarray(0, block_size);
-    }
-    while (ciphertext.length > block_size * pos) {
-      const decblock = cipherfn.encrypt(blockp);
-      blockp = ciphertext.subarray(pos * block_size + offset, pos * block_size + block_size + offset);
-      for (i = 0; i < blockp.length; i++) {
-        plaintext[j++] = blockp[i] ^ decblock[i];
-      }
-      pos++;
-    }
-
-    return plaintext;
-  }
-}; // Modified by ProtonTech AG
+const webCrypto = _util2.default.getWebCrypto(); // Modified by ProtonTech AG
 
 // Modified by Recurity Labs GmbH
 
@@ -24292,11 +24035,133 @@ exports.default = {
  */
 
 /**
+ * @requires web-stream-tools
  * @requires crypto/cipher
+ * @requires util
  * @module crypto/cfb
  */
 
-},{"./cipher":88}],84:[function(require,module,exports){
+const nodeCrypto = _util2.default.getNodeCrypto();
+const Buffer = _util2.default.getNodeBuffer();
+
+exports.default = {
+  encrypt: function encrypt(algo, key, plaintext, iv) {
+    if (algo.substr(0, 3) === 'aes') {
+      return aesEncrypt(algo, key, plaintext, iv);
+    }
+
+    const cipherfn = new _cipher2.default[algo](key);
+    const block_size = cipherfn.blockSize;
+
+    let blocki = new Uint8Array(block_size);
+    const blockc = iv;
+    let pos = 0;
+    const ciphertext = new Uint8Array(plaintext.length);
+    let i;
+    let j = 0;
+
+    while (plaintext.length > block_size * pos) {
+      const encblock = cipherfn.encrypt(blockc);
+      blocki = plaintext.subarray(pos * block_size, pos * block_size + block_size);
+      for (i = 0; i < blocki.length; i++) {
+        blockc[i] = blocki[i] ^ encblock[i];
+        ciphertext[j++] = blockc[i];
+      }
+      pos++;
+    }
+    return ciphertext;
+  },
+
+  decrypt: async function decrypt(algo, key, ciphertext, iv) {
+    if (algo.substr(0, 3) === 'aes') {
+      return aesDecrypt(algo, key, ciphertext, iv);
+    }
+
+    ciphertext = await _webStreamTools2.default.readToEnd(ciphertext);
+
+    const cipherfn = new _cipher2.default[algo](key);
+    const block_size = cipherfn.blockSize;
+
+    let blockp = iv;
+    let pos = 0;
+    const plaintext = new Uint8Array(ciphertext.length);
+    const offset = 0;
+    let i;
+    let j = 0;
+
+    while (ciphertext.length > block_size * pos) {
+      const decblock = cipherfn.encrypt(blockp);
+      blockp = ciphertext.subarray(pos * block_size + offset, pos * block_size + block_size + offset);
+      for (i = 0; i < blockp.length; i++) {
+        plaintext[j++] = blockp[i] ^ decblock[i];
+      }
+      pos++;
+    }
+
+    return plaintext;
+  }
+};
+
+
+function aesEncrypt(algo, key, pt, iv) {
+  if (_util2.default.getWebCrypto() && key.length !== 24 && // Chrome doesn't support 192 bit keys, see https://www.chromium.org/blink/webcrypto#TOC-AES-support
+  !_util2.default.isStream(pt) && pt.length >= 3000 * _config2.default.min_bytes_for_web_crypto // Default to a 3MB minimum. Chrome is pretty slow for small messages, see: https://bugs.chromium.org/p/chromium/issues/detail?id=701188#c2
+  ) {
+      // Web Crypto
+      return webEncrypt(algo, key, pt, iv);
+    }
+  if (nodeCrypto) {
+    // Node crypto library.
+    return nodeEncrypt(algo, key, pt, iv);
+  } // asm.js fallback
+  const cfb = new _cfb.AES_CFB(key);
+  return _webStreamTools2.default.transform(pt, value => cfb.AES_Encrypt_process(value), () => cfb.AES_Encrypt_finish());
+}
+
+function aesDecrypt(algo, key, ct, iv) {
+  if (nodeCrypto) {
+    // Node crypto library.
+    return nodeDecrypt(algo, key, ct, iv);
+  }
+  if (_util2.default.isStream(ct)) {
+    const cfb = new _cfb.AES_CFB(key);
+    return _webStreamTools2.default.transform(ct, value => cfb.AES_Decrypt_process(value), () => cfb.AES_Decrypt_finish());
+  }
+  return _cfb.AES_CFB.decrypt(ct, key, iv);
+}
+
+function xorMut(a, b) {
+  for (let i = 0; i < a.length; i++) {
+    a[i] = a[i] ^ b[i];
+  }
+}
+
+async function webEncrypt(algo, key, pt, iv) {
+  const ALGO = 'AES-CBC';
+  const _key = await webCrypto.importKey('raw', key, { name: ALGO }, false, ['encrypt']);
+  const blockSize = _cipher2.default[algo].blockSize;
+
+  const cbc_pt = _util2.default.concatUint8Array([new Uint8Array(blockSize), pt]);
+  const ct = new Uint8Array((await webCrypto.encrypt({ name: ALGO, iv }, _key, cbc_pt))).subarray(0, pt.length);
+  xorMut(ct, pt);
+  return ct;
+}
+
+function nodeEncrypt(algo, key, pt, iv) {
+  key = new Buffer(key);
+  iv = new Buffer(iv);
+  const cipherObj = new nodeCrypto.createCipheriv('aes-' + algo.substr(3, 3) + '-cfb', key, iv);
+  return _webStreamTools2.default.transform(pt, value => new Uint8Array(cipherObj.update(new Buffer(value))));
+}
+
+function nodeDecrypt(algo, key, ct, iv) {
+  key = new Buffer(key);
+  iv = new Buffer(iv);
+  const decipherObj = new nodeCrypto.createDecipheriv('aes-' + algo.substr(3, 3) + '-cfb', key, iv);
+  return _webStreamTools2.default.transform(ct, value => new Uint8Array(decipherObj.update(new Buffer(value))));
+}
+
+},{"../config":81,"../util":154,"./cipher":88,"asmcrypto.js/dist_es5/aes/cfb":6,"web-stream-tools":77}],84:[function(require,module,exports){
 'use strict';
 
 Object.defineProperty(exports, "__esModule", {
@@ -25858,9 +25723,20 @@ var _enums = require('../enums');
 
 var _enums2 = _interopRequireDefault(_enums);
 
+var _util = require('../util');
+
+var _util2 = _interopRequireDefault(_util);
+
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
 
-// GPG4Browsers - An OpenPGP implementation in javascript
+function constructParams(types, data) {
+  return types.map(function (type, i) {
+    if (data && data[i]) {
+      return new type(data[i]);
+    }
+    return new type();
+  });
+} // GPG4Browsers - An OpenPGP implementation in javascript
 // Copyright (C) 2011 Recurity Labs GmbH
 //
 // This library is free software; you can redistribute it and/or
@@ -25890,17 +25766,9 @@ function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { de
  * @requires type/mpi
  * @requires type/oid
  * @requires enums
+ * @requires util
  * @module crypto/crypto
  */
-
-function constructParams(types, data) {
-  return types.map(function (type, i) {
-    if (data && data[i]) {
-      return new type(data[i]);
-    }
-    return new type();
-  });
-}
 
 exports.default = {
   /**
@@ -26147,11 +26015,13 @@ exports.default = {
    * Generates a random byte prefix for the specified algorithm
    * See {@link https://tools.ietf.org/html/rfc4880#section-9.2|RFC 4880 9.2} for algorithms.
    * @param {module:enums.symmetric} algo Symmetric encryption algorithm
-   * @returns {Uint8Array}                Random bytes with length equal to the block size of the cipher
+   * @returns {Uint8Array}                Random bytes with length equal to the block size of the cipher, plus the last two bytes repeated.
    * @async
    */
-  getPrefixRandom: function getPrefixRandom(algo) {
-    return _random2.default.getRandomBytes(_cipher2.default[algo].blockSize);
+  getPrefixRandom: async function getPrefixRandom(algo) {
+    const prefixrandom = await _random2.default.getRandomBytes(_cipher2.default[algo].blockSize);
+    const repeat = new Uint8Array([prefixrandom[prefixrandom.length - 2], prefixrandom[prefixrandom.length - 1]]);
+    return _util2.default.concat([prefixrandom, repeat]);
   },
 
   /**
@@ -26168,7 +26038,7 @@ exports.default = {
   constructParams: constructParams
 };
 
-},{"../enums":115,"../type/ecdh_symkey":148,"../type/kdf_params":149,"../type/mpi":151,"../type/oid":152,"./cipher":88,"./public_key":108,"./random":111}],92:[function(require,module,exports){
+},{"../enums":115,"../type/ecdh_symkey":148,"../type/kdf_params":149,"../type/mpi":151,"../type/oid":152,"../util":154,"./cipher":88,"./public_key":108,"./random":111}],92:[function(require,module,exports){
 'use strict';
 
 Object.defineProperty(exports, "__esModule", {
@@ -29781,7 +29651,9 @@ function dearmor(input) {
             if (line.indexOf('=') === -1 && line.indexOf('-') === -1) {
               await writer.write(line);
             } else {
-              let remainder = line + (await reader.readToEnd());
+              let remainder = await reader.readToEnd();
+              if (!remainder.length) remainder = '';
+              remainder = line + remainder;
               remainder = remainder.replace(/[\t\r ]+$/mg, '');
               const parts = remainder.split(reSplit);
               if (parts.length === 1) {
@@ -31284,7 +31156,7 @@ async function getLatestValidSignature(signatures, primaryKey, signatureType, da
 /**
  * Returns last created key or key by given keyId that is available for signing and verification
  * @param  {module:type/keyid} keyId, optional
- * @param  {Date} date use the given date for verification instead of the current time
+ * @param  {Date} date (optional) use the given date for verification instead of the current time
  * @param  {Object} userId, optional user ID
  * @returns {Promise<module:key.Key|module:key~SubKey|null>} key or null if no signing key has been found
  * @async
@@ -31484,7 +31356,7 @@ Key.prototype.verifyPrimaryKey = async function (date = new Date(), userId = {})
  * @async
  */
 Key.prototype.getExpirationTime = async function (capabilities, keyId, userId) {
-  const primaryUser = await this.getPrimaryUser(null);
+  const primaryUser = await this.getPrimaryUser(null, userId);
   if (!primaryUser) {
     throw new Error('Could not find primary user');
   }
@@ -31493,13 +31365,13 @@ Key.prototype.getExpirationTime = async function (capabilities, keyId, userId) {
   const sigExpiry = selfCert.getExpirationTime();
   let expiry = keyExpiry < sigExpiry ? keyExpiry : sigExpiry;
   if (capabilities === 'encrypt' || capabilities === 'encrypt_sign') {
-    const encryptKey = await this.getEncryptionKey(keyId, null, userId);
+    const encryptKey = (await this.getEncryptionKey(keyId, expiry, userId)) || (await this.getEncryptionKey(keyId, null, userId));
     if (!encryptKey) return null;
     const encryptExpiry = await encryptKey.getExpirationTime(this.keyPacket);
     if (encryptExpiry < expiry) expiry = encryptExpiry;
   }
   if (capabilities === 'sign' || capabilities === 'encrypt_sign') {
-    const signKey = await this.getSigningKey(keyId, null, userId);
+    const signKey = (await this.getSigningKey(keyId, expiry, userId)) || (await this.getSigningKey(keyId, null, userId));
     if (!signKey) return null;
     const signExpiry = await signKey.getExpirationTime(this.keyPacket);
     if (signExpiry < expiry) expiry = signExpiry;
@@ -31511,7 +31383,7 @@ Key.prototype.getExpirationTime = async function (capabilities, keyId, userId) {
  * Returns primary user and most significant (latest valid) self signature
  * - if multiple primary users exist, returns the one with the latest self signature
  * - otherwise, returns the user with the latest self signature
- * @param  {Date} date use the given date for verification instead of the current time
+ * @param  {Date} date (optional) use the given date for verification instead of the current time
  * @param  {Object} userId (optional) user ID to get instead of the primary user, if it exists
  * @returns {Promise<{user: module:key.User,
  *                    selfCertification: module:packet.Signature}>} The primary user and the self signature
@@ -31534,11 +31406,14 @@ Key.prototype.getPrimaryUser = async function (date = new Date(), userId = {}) {
     }
     return null;
   }
+  await Promise.all(users.map(async function (a) {
+    return a.user.revoked || a.user.isRevoked(primaryKey, a.selfCertification, null, date);
+  }));
   // sort by primary user flag and signature creation time
   const primaryUser = users.sort(function (a, b) {
     const A = a.selfCertification;
     const B = b.selfCertification;
-    return A.isPrimaryUserID - B.isPrimaryUserID || A.created - B.created;
+    return B.revoked - A.revoked || A.isPrimaryUserID - B.isPrimaryUserID || A.created - B.created;
   }).pop();
   const user = primaryUser.user,
         cert = primaryUser.selfCertification;
@@ -31715,11 +31590,13 @@ Key.prototype.applyRevocationCertificate = async function (revocationCertificate
 /**
  * Signs primary user of key
  * @param  {Array<module:key.Key>} privateKey decrypted private keys for signing
+ * @param  {Date} date (optional) use the given date for verification instead of the current time
+ * @param  {Object} userId (optional) user ID to get instead of the primary user, if it exists
  * @returns {Promise<module:key.Key>} new public key with new certificate signature
  * @async
  */
-Key.prototype.signPrimaryUser = async function (privateKeys) {
-  var _ref2 = (await this.getPrimaryUser()) || {};
+Key.prototype.signPrimaryUser = async function (privateKeys, date, userId) {
+  var _ref2 = (await this.getPrimaryUser(date, userId)) || {};
 
   const index = _ref2.index,
         user = _ref2.user;
@@ -31753,14 +31630,16 @@ Key.prototype.signAllUsers = async function (privateKeys) {
  * - if no arguments are given, verifies the self certificates;
  * - otherwise, verifies all certificates signed with given keys.
  * @param  {Array<module:key.Key>} keys array of keys to verify certificate signatures
+ * @param  {Date} date (optional) use the given date for verification instead of the current time
+ * @param  {Object} userId (optional) user ID to get instead of the primary user, if it exists
  * @returns {Promise<Array<{keyid: module:type/keyid,
  *                          valid: Boolean}>>}    List of signer's keyid and validity of signature
  * @async
  */
-Key.prototype.verifyPrimaryUser = async function (keys) {
+Key.prototype.verifyPrimaryUser = async function (keys, date, userId) {
   const primaryKey = this.keyPacket;
 
-  var _ref3 = (await this.getPrimaryUser()) || {};
+  var _ref3 = (await this.getPrimaryUser(date, userId)) || {};
 
   const user = _ref3.user;
 
@@ -32593,7 +32472,7 @@ function isDataExpired(keyPacket, signature, date = new Date()) {
   const normDate = _util2.default.normalizeDate(date);
   if (normDate !== null) {
     const expirationTime = getExpirationTime(keyPacket, signature);
-    return !(keyPacket.created <= normDate && normDate < expirationTime) || signature && signature.isExpired(date);
+    return !(keyPacket.created <= normDate && normDate <= expirationTime) || signature && signature.isExpired(date);
   }
   return false;
 }
@@ -32661,16 +32540,16 @@ async function getPreferredHashAlgo(key, keyPacket, date = new Date(), userId = 
  * @param  {symmetric|aead} type Type of preference to return
  * @param  {Array<module:key.Key>} keys Set of keys
  * @param  {Date} date (optional) use the given date for verification instead of the current time
- * @param  {Object} userId (optional) user ID
+ * @param  {Array} userIds (optional) user IDs
  * @returns {Promise<module:enums.symmetric>}   Preferred symmetric algorithm
  * @async
  */
-async function getPreferredAlgo(type, keys, date = new Date(), userId = {}) {
+async function getPreferredAlgo(type, keys, date = new Date(), userIds = []) {
   const prefProperty = type === 'symmetric' ? 'preferredSymmetricAlgorithms' : 'preferredAeadAlgorithms';
   const defaultAlgo = type === 'symmetric' ? _enums2.default.symmetric.aes128 : _enums2.default.aead.eax;
   const prioMap = {};
-  await Promise.all(keys.map(async function (key) {
-    const primaryUser = await key.getPrimaryUser(date, userId);
+  await Promise.all(keys.map(async function (key, i) {
+    const primaryUser = await key.getPrimaryUser(date, userIds[i]);
     if (!primaryUser || !primaryUser.selfCertification[prefProperty]) {
       return defaultAlgo;
     }
@@ -32698,14 +32577,15 @@ async function getPreferredAlgo(type, keys, date = new Date(), userId = {}) {
  * Returns whether aead is supported by all keys in the set
  * @param  {Array<module:key.Key>} keys Set of keys
  * @param  {Date} date (optional) use the given date for verification instead of the current time
+ * @param  {Array} userIds (optional) user IDs
  * @returns {Promise<Boolean>}
  * @async
  */
-async function isAeadSupported(keys, date = new Date(), userId = {}) {
+async function isAeadSupported(keys, date = new Date(), userIds = []) {
   let supported = true;
   // TODO replace when Promise.some or Promise.any are implemented
-  await Promise.all(keys.map(async function (key) {
-    const primaryUser = await key.getPrimaryUser(date, userId);
+  await Promise.all(keys.map(async function (key, i) {
+    const primaryUser = await key.getPrimaryUser(date, userIds[i]);
     if (!primaryUser || !primaryUser.selfCertification.features || !(primaryUser.selfCertification.features[0] & _enums2.default.features.aead)) {
       supported = false;
     }
@@ -33342,7 +33222,8 @@ Message.prototype.decryptSessionKeys = async function (privateKeys, passwords) {
         const primaryUser = await privateKey.getPrimaryUser(); // TODO: Pass userId from somewhere.
         let algos = [_enums2.default.symmetric.aes256, // Old OpenPGP.js default fallback
         _enums2.default.symmetric.aes128, // RFC4880bis fallback
-        _enums2.default.symmetric.tripledes // RFC4880 fallback
+        _enums2.default.symmetric.tripledes, // RFC4880 fallback
+        _enums2.default.symmetric.cast5 // Golang OpenPGP fallback
         ];
         if (primaryUser && primaryUser.selfCertification.preferredSymmetricAlgorithms) {
           algos = algos.concat(primaryUser.selfCertification.preferredSymmetricAlgorithms);
@@ -33434,12 +33315,12 @@ Message.prototype.getText = function () {
  * @param  {Object} sessionKey         (optional) session key in the form: { data:Uint8Array, algorithm:String, [aeadAlgorithm:String] }
  * @param  {Boolean} wildcard          (optional) use a key ID of 0 instead of the public key IDs
  * @param  {Date} date                 (optional) override the creation date of the literal package
- * @param  {Object} userId             (optional) user ID to encrypt for, e.g. { name:'Robert Receiver', email:'robert@openpgp.org' }
+ * @param  {Array} userIds             (optional) user IDs to encrypt for, e.g. [{ name:'Robert Receiver', email:'robert@openpgp.org' }]
  * @param  {Boolean} streaming         (optional) whether to process data as a stream
  * @returns {Promise<Message>}                   new message with encrypted content
  * @async
  */
-Message.prototype.encrypt = async function (keys, passwords, sessionKey, wildcard = false, date = new Date(), userId = {}, streaming) {
+Message.prototype.encrypt = async function (keys, passwords, sessionKey, wildcard = false, date = new Date(), userIds = [], streaming) {
   let symAlgo;
   let aeadAlgo;
   let symEncryptedPacket;
@@ -33452,9 +33333,9 @@ Message.prototype.encrypt = async function (keys, passwords, sessionKey, wildcar
     aeadAlgo = sessionKey.aeadAlgorithm;
     sessionKey = sessionKey.data;
   } else if (keys && keys.length) {
-    symAlgo = _enums2.default.read(_enums2.default.symmetric, (await (0, _key.getPreferredAlgo)('symmetric', keys, date, userId)));
-    if (_config2.default.aead_protect && _config2.default.aead_protect_version === 4 && (await (0, _key.isAeadSupported)(keys, date, userId))) {
-      aeadAlgo = _enums2.default.read(_enums2.default.aead, (await (0, _key.getPreferredAlgo)('aead', keys, date, userId)));
+    symAlgo = _enums2.default.read(_enums2.default.symmetric, (await (0, _key.getPreferredAlgo)('symmetric', keys, date, userIds)));
+    if (_config2.default.aead_protect && _config2.default.aead_protect_version === 4 && (await (0, _key.isAeadSupported)(keys, date, userIds))) {
+      aeadAlgo = _enums2.default.read(_enums2.default.aead, (await (0, _key.getPreferredAlgo)('aead', keys, date, userIds)));
     }
   } else if (passwords && passwords.length) {
     symAlgo = _enums2.default.read(_enums2.default.symmetric, _config2.default.encryption_cipher);
@@ -33467,7 +33348,7 @@ Message.prototype.encrypt = async function (keys, passwords, sessionKey, wildcar
     sessionKey = await _crypto2.default.generateSessionKey(symAlgo);
   }
 
-  const msg = await encryptSessionKey(sessionKey, symAlgo, aeadAlgo, keys, passwords, wildcard, date, userId);
+  const msg = await encryptSessionKey(sessionKey, symAlgo, aeadAlgo, keys, passwords, wildcard, date, userIds);
 
   if (_config2.default.aead_protect && (_config2.default.aead_protect_version !== 4 || aeadAlgo)) {
     symEncryptedPacket = new _packet2.default.SymEncryptedAEADProtected();
@@ -33502,16 +33383,16 @@ Message.prototype.encrypt = async function (keys, passwords, sessionKey, wildcar
  * @param  {Array<String>} passwords   (optional) for message encryption
  * @param  {Boolean} wildcard          (optional) use a key ID of 0 instead of the public key IDs
  * @param  {Date} date                 (optional) override the date
- * @param  {Object} userId             (optional) user ID to encrypt for, e.g. { name:'Robert Receiver', email:'robert@openpgp.org' }
+ * @param  {Array} userIds             (optional) user IDs to encrypt for, e.g. [{ name:'Robert Receiver', email:'robert@openpgp.org' }]
  * @returns {Promise<Message>}          new message with encrypted content
  * @async
  */
-async function encryptSessionKey(sessionKey, symAlgo, aeadAlgo, publicKeys, passwords, wildcard = false, date = new Date(), userId = {}) {
+async function encryptSessionKey(sessionKey, symAlgo, aeadAlgo, publicKeys, passwords, wildcard = false, date = new Date(), userIds = []) {
   const packetlist = new _packet2.default.List();
 
   if (publicKeys) {
     const results = await Promise.all(publicKeys.map(async function (publicKey) {
-      const encryptionKey = await publicKey.getEncryptionKey(undefined, date, userId);
+      const encryptionKey = await publicKey.getEncryptionKey(undefined, date, userIds);
       if (!encryptionKey) {
         throw new Error('Could not find valid key packet for encryption in key ' + publicKey.getKeyId().toHex());
       }
@@ -33570,11 +33451,11 @@ async function encryptSessionKey(sessionKey, symAlgo, aeadAlgo, publicKeys, pass
  * @param  {Array<module:key.Key>}        privateKeys private keys with decrypted secret key data for signing
  * @param  {Signature} signature          (optional) any existing detached signature to add to the message
  * @param  {Date} date                    (optional) override the creation time of the signature
- * @param  {Object} userId                (optional) user ID to sign with, e.g. { name:'Steve Sender', email:'steve@openpgp.org' }
+ * @param  {Array} userIds                (optional) user IDs to sign with, e.g. [{ name:'Steve Sender', email:'steve@openpgp.org' }]
  * @returns {Promise<Message>}             new message with signed content
  * @async
  */
-Message.prototype.sign = async function (privateKeys = [], signature = null, date = new Date(), userId = {}) {
+Message.prototype.sign = async function (privateKeys = [], signature = null, date = new Date(), userIds = []) {
   const packetlist = new _packet2.default.List();
 
   const literalDataPacket = this.packets.findPacket(_enums2.default.packet.literal);
@@ -33607,13 +33488,13 @@ Message.prototype.sign = async function (privateKeys = [], signature = null, dat
     if (privateKey.isPublic()) {
       throw new Error('Need private key for signing');
     }
-    const signingKey = await privateKey.getSigningKey(undefined, date, userId);
+    const signingKey = await privateKey.getSigningKey(undefined, date, userIds);
     if (!signingKey) {
       throw new Error('Could not find valid key packet for signing in key ' + privateKey.getKeyId().toHex());
     }
     const onePassSig = new _packet2.default.OnePassSignature();
     onePassSig.signatureType = signatureType;
-    onePassSig.hashAlgorithm = await (0, _key.getPreferredHashAlgo)(privateKey, signingKey.keyPacket, date, userId);
+    onePassSig.hashAlgorithm = await (0, _key.getPreferredHashAlgo)(privateKey, signingKey.keyPacket, date, userIds);
     onePassSig.publicKeyAlgorithm = signingKey.keyPacket.algorithm;
     onePassSig.issuerKeyId = signingKey.getKeyId();
     if (i === privateKeys.length - 1) {
@@ -33655,16 +33536,16 @@ Message.prototype.compress = function (compression) {
  * @param  {Array<module:key.Key>}               privateKeys private keys with decrypted secret key data for signing
  * @param  {Signature} signature                 (optional) any existing detached signature
  * @param  {Date} date                           (optional) override the creation time of the signature
- * @param  {Object} userId                       (optional) user ID to sign with, e.g. { name:'Steve Sender', email:'steve@openpgp.org' }
+ * @param  {Array} userIds                       (optional) user IDs to sign with, e.g. [{ name:'Steve Sender', email:'steve@openpgp.org' }]
  * @returns {Promise<module:signature.Signature>} new detached signature of message content
  * @async
  */
-Message.prototype.signDetached = async function (privateKeys = [], signature = null, date = new Date(), userId = {}) {
+Message.prototype.signDetached = async function (privateKeys = [], signature = null, date = new Date(), userIds = []) {
   const literalDataPacket = this.packets.findPacket(_enums2.default.packet.literal);
   if (!literalDataPacket) {
     throw new Error('No literal data packet to sign.');
   }
-  return new _signature.Signature((await createSignaturePackets(literalDataPacket, privateKeys, signature, date, userId)));
+  return new _signature.Signature((await createSignaturePackets(literalDataPacket, privateKeys, signature, date, userIds)));
 };
 
 /**
@@ -33673,17 +33554,18 @@ Message.prototype.signDetached = async function (privateKeys = [], signature = n
  * @param  {Array<module:key.Key>}             privateKeys private keys with decrypted secret key data for signing
  * @param  {Signature} signature               (optional) any existing detached signature to append
  * @param  {Date} date                         (optional) override the creationtime of the signature
- * @param  {Object} userId                     (optional) user ID to sign with, e.g. { name:'Steve Sender', email:'steve@openpgp.org' }
+ * @param  {Array} userIds                     (optional) user IDs to sign with, e.g. [{ name:'Steve Sender', email:'steve@openpgp.org' }]
  * @returns {Promise<module:packet.List>} list of signature packets
  * @async
  */
-async function createSignaturePackets(literalDataPacket, privateKeys, signature = null, date = new Date(), userId = {}) {
+async function createSignaturePackets(literalDataPacket, privateKeys, signature = null, date = new Date(), userIds = []) {
   const packetlist = new _packet2.default.List();
 
   // If data packet was created from Uint8Array, use binary, otherwise use text
   const signatureType = literalDataPacket.text === null ? _enums2.default.signature.binary : _enums2.default.signature.text;
 
-  await Promise.all(privateKeys.map(async privateKey => {
+  await Promise.all(privateKeys.map(async (privateKey, i) => {
+    const userId = userIds[i];
     if (privateKey.isPublic()) {
       throw new Error('Need private key for signing');
     }
@@ -34081,7 +33963,7 @@ let asyncProxy; // instance of the asyncproxy
  */
 
 function initWorker({ path = 'openpgp.worker.js', n = 1, workers = [] } = {}) {
-  if (workers.length || typeof window !== 'undefined' && window.Worker) {
+  if (workers.length || typeof window !== 'undefined' && window.Worker && window.MessageChannel) {
     asyncProxy = new _async_proxy2.default({ path, n, workers, config: _config2.default });
     return true;
   }
@@ -34306,8 +34188,8 @@ function encryptKey({ privateKey, passphrase }) {
  * @param  {Boolean} returnSessionKey             (optional) if the unencrypted session key should be added to returned object
  * @param  {Boolean} wildcard                     (optional) use a key ID of 0 instead of the public key IDs
  * @param  {Date} date                            (optional) override the creation date of the message signature
- * @param  {Object} fromUserId                    (optional) user ID to sign with, e.g. { name:'Steve Sender', email:'steve@openpgp.org' }
- * @param  {Object} toUserId                      (optional) user ID to encrypt for, e.g. { name:'Robert Receiver', email:'robert@openpgp.org' }
+ * @param  {Array} fromUserIds                    (optional) array of user IDs to sign with, one per key in `privateKeys`, e.g. [{ name:'Steve Sender', email:'steve@openpgp.org' }]
+ * @param  {Array} toUserIds                      (optional) array of user IDs to encrypt for, one per key in `publicKeys`, e.g. [{ name:'Robert Receiver', email:'robert@openpgp.org' }]
  * @returns {Promise<Object>}                     Object containing encrypted (and optionally signed) message in the form:
  *
  *     {
@@ -34320,12 +34202,12 @@ function encryptKey({ privateKey, passphrase }) {
  * @async
  * @static
  */
-function encrypt({ message, publicKeys, privateKeys, passwords, sessionKey, compression = _config2.default.compression, armor = true, streaming = message && message.fromStream, detached = false, signature = null, returnSessionKey = false, wildcard = false, date = new Date(), fromUserId = {}, toUserId = {} }) {
-  checkMessage(message);publicKeys = toArray(publicKeys);privateKeys = toArray(privateKeys);passwords = toArray(passwords);
+function encrypt({ message, publicKeys, privateKeys, passwords, sessionKey, compression = _config2.default.compression, armor = true, streaming = message && message.fromStream, detached = false, signature = null, returnSessionKey = false, wildcard = false, date = new Date(), fromUserIds = [], toUserIds = [] }) {
+  checkMessage(message);publicKeys = toArray(publicKeys);privateKeys = toArray(privateKeys);passwords = toArray(passwords);fromUserIds = toArray(fromUserIds);toUserIds = toArray(toUserIds);
 
   if (!nativeAEAD() && asyncProxy) {
     // use web worker if web crypto apis are not supported
-    return asyncProxy.delegate('encrypt', { message, publicKeys, privateKeys, passwords, sessionKey, compression, armor, streaming, detached, signature, returnSessionKey, wildcard, date, fromUserId, toUserId });
+    return asyncProxy.delegate('encrypt', { message, publicKeys, privateKeys, passwords, sessionKey, compression, armor, streaming, detached, signature, returnSessionKey, wildcard, date, fromUserIds, toUserIds });
   }
   const result = {};
   return Promise.resolve().then(async function () {
@@ -34335,14 +34217,14 @@ function encrypt({ message, publicKeys, privateKeys, passwords, sessionKey, comp
     if (privateKeys.length || signature) {
       // sign the message only if private keys or signature is specified
       if (detached) {
-        const detachedSignature = await message.signDetached(privateKeys, signature, date, fromUserId);
+        const detachedSignature = await message.signDetached(privateKeys, signature, date, fromUserIds);
         result.signature = armor ? detachedSignature.armor() : detachedSignature;
       } else {
-        message = await message.sign(privateKeys, signature, date, fromUserId);
+        message = await message.sign(privateKeys, signature, date, fromUserIds);
       }
     }
     message = message.compress(compression);
-    return message.encrypt(publicKeys, passwords, sessionKey, wildcard, date, toUserId, streaming);
+    return message.encrypt(publicKeys, passwords, sessionKey, wildcard, date, toUserIds, streaming);
   }).then(async encrypted => {
     if (armor) {
       result.data = encrypted.message.armor();
@@ -34424,7 +34306,7 @@ function decrypt({ message, privateKeys, passwords, sessionKeys, publicKeys, for
  * @param  {'web'|'node'|false} streaming     (optional) whether to return data as a stream. Defaults to the type of stream `message` was created from, if any.
  * @param  {Boolean} detached                 (optional) if the return value should contain a detached signature
  * @param  {Date} date                        (optional) override the creation date of the signature
- * @param  {Object} fromUserId                (optional) user ID to sign with, e.g. { name:'Steve Sender', email:'steve@openpgp.org' }
+ * @param  {Array} fromUserIds                (optional) array of user IDs to sign with, one per key in `privateKeys`, e.g. [{ name:'Steve Sender', email:'steve@openpgp.org' }]
  * @returns {Promise<Object>}                 Object containing signed message in the form:
  *
  *     {
@@ -34441,24 +34323,24 @@ function decrypt({ message, privateKeys, passwords, sessionKeys, publicKeys, for
  * @async
  * @static
  */
-function sign({ message, privateKeys, armor = true, streaming = message && message.fromStream, detached = false, date = new Date(), fromUserId = {} }) {
+function sign({ message, privateKeys, armor = true, streaming = message && message.fromStream, detached = false, date = new Date(), fromUserIds = [] }) {
   checkCleartextOrMessage(message);
-  privateKeys = toArray(privateKeys);
+  privateKeys = toArray(privateKeys);fromUserIds = toArray(fromUserIds);
 
   if (asyncProxy) {
     // use web worker if available
     return asyncProxy.delegate('sign', {
-      message, privateKeys, armor, streaming, detached, date, fromUserId
+      message, privateKeys, armor, streaming, detached, date, fromUserIds
     });
   }
 
   const result = {};
   return Promise.resolve().then(async function () {
     if (detached) {
-      const signature = await message.signDetached(privateKeys, undefined, date, fromUserId);
+      const signature = await message.signDetached(privateKeys, undefined, date, fromUserIds);
       result.signature = armor ? signature.armor() : signature;
     } else {
-      message = await message.sign(privateKeys, undefined, date, fromUserId);
+      message = await message.sign(privateKeys, undefined, date, fromUserIds);
       if (armor) {
         result.data = message.armor();
       } else {
@@ -34529,22 +34411,22 @@ function verify({ message, publicKeys, streaming = message && message.fromStream
  * @param  {String|Array<String>} passwords   (optional) passwords for the message
  * @param  {Boolean} wildcard                 (optional) use a key ID of 0 instead of the public key IDs
  * @param  {Date} date                        (optional) override the date
- * @param  {Object} toUserId                  (optional) user ID to encrypt for, e.g. { name:'Phil Zimmermann', email:'phil@openpgp.org' }
+ * @param  {Array} toUserIds                  (optional) array of user IDs to encrypt for, one per key in `publicKeys`, e.g. [{ name:'Phil Zimmermann', email:'phil@openpgp.org' }]
  * @returns {Promise<Message>}                 the encrypted session key packets contained in a message object
  * @async
  * @static
  */
-function encryptSessionKey({ data, algorithm, aeadAlgorithm, publicKeys, passwords, wildcard = false, date = new Date(), toUserId = {} }) {
-  checkBinary(data);checkString(algorithm, 'algorithm');publicKeys = toArray(publicKeys);passwords = toArray(passwords);
+function encryptSessionKey({ data, algorithm, aeadAlgorithm, publicKeys, passwords, wildcard = false, date = new Date(), toUserIds = [] }) {
+  checkBinary(data);checkString(algorithm, 'algorithm');publicKeys = toArray(publicKeys);passwords = toArray(passwords);toUserIds = toArray(toUserIds);
 
   if (asyncProxy) {
     // use web worker if available
-    return asyncProxy.delegate('encryptSessionKey', { data, algorithm, aeadAlgorithm, publicKeys, passwords, wildcard, date, toUserId });
+    return asyncProxy.delegate('encryptSessionKey', { data, algorithm, aeadAlgorithm, publicKeys, passwords, wildcard, date, toUserIds });
   }
 
   return Promise.resolve().then(async function () {
 
-    return { message: await messageLib.encryptSessionKey(data, algorithm, aeadAlgorithm, publicKeys, passwords, wildcard, date, toUserId) };
+    return { message: await messageLib.encryptSessionKey(data, algorithm, aeadAlgorithm, publicKeys, passwords, wildcard, date, toUserIds) };
   }).catch(onError.bind(null, 'Error encrypting session key'));
 }
 
@@ -37148,7 +37030,7 @@ SecretKey.prototype.encrypt = async function (passphrase) {
     arr = [new Uint8Array([254, _enums2.default.write(_enums2.default.symmetric, symmetric)])];
     arr.push(s2k.write());
     arr.push(iv);
-    arr.push(_crypto2.default.cfb.normalEncrypt(symmetric, key, _util2.default.concatUint8Array([cleartext, await _crypto2.default.hash.sha1(cleartext)]), iv));
+    arr.push(_crypto2.default.cfb.encrypt(symmetric, key, _util2.default.concatUint8Array([cleartext, await _crypto2.default.hash.sha1(cleartext)]), iv));
   }
 
   this.encrypted = _util2.default.concatUint8Array(arr);
@@ -37237,7 +37119,7 @@ SecretKey.prototype.decrypt = async function (passphrase) {
       }
     }
   } else {
-    const cleartextWithHash = _crypto2.default.cfb.normalDecrypt(symmetric, key, ciphertext, iv);
+    const cleartextWithHash = await _crypto2.default.cfb.decrypt(symmetric, key, ciphertext, iv);
 
     let hash;
     let hashlen;
@@ -38100,7 +37982,7 @@ Signature.prototype.isExpired = function (date = new Date()) {
   const normDate = _util2.default.normalizeDate(date);
   if (normDate !== null) {
     const expirationTime = this.getExpirationTime();
-    return !(this.created <= normDate && normDate < expirationTime);
+    return !(this.created <= normDate && normDate <= expirationTime);
   }
   return false;
 };
@@ -38356,8 +38238,6 @@ Object.defineProperty(exports, "__esModule", {
   value: true
 });
 
-var _cfb = require('asmcrypto.js/dist_es5/aes/cfb');
-
 var _webStreamTools = require('web-stream-tools');
 
 var _webStreamTools2 = _interopRequireDefault(_webStreamTools);
@@ -38380,6 +38260,20 @@ var _util2 = _interopRequireDefault(_util);
 
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
 
+const VERSION = 1; // A one-octet version number of the data packet.
+
+/**
+ * Implementation of the Sym. Encrypted Integrity Protected Data Packet (Tag 18)
+ *
+ * {@link https://tools.ietf.org/html/rfc4880#section-5.13|RFC4880 5.13}:
+ * The Symmetrically Encrypted Integrity Protected Data packet is
+ * a variant of the Symmetrically Encrypted Data packet. It is a new feature
+ * created for OpenPGP that addresses the problem of detecting a modification to
+ * encrypted data. It is used in combination with a Modification Detection Code
+ * packet.
+ * @memberof module:packet
+ * @constructor
+ */
 // GPG4Browsers - An OpenPGP implementation in javascript
 // Copyright (C) 2011 Recurity Labs GmbH
 //
@@ -38406,23 +38300,6 @@ function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { de
  * @requires util
  */
 
-const nodeCrypto = _util2.default.getNodeCrypto();
-const Buffer = _util2.default.getNodeBuffer();
-
-const VERSION = 1; // A one-octet version number of the data packet.
-
-/**
- * Implementation of the Sym. Encrypted Integrity Protected Data Packet (Tag 18)
- *
- * {@link https://tools.ietf.org/html/rfc4880#section-5.13|RFC4880 5.13}:
- * The Symmetrically Encrypted Integrity Protected Data packet is
- * a variant of the Symmetrically Encrypted Data packet. It is a new feature
- * created for OpenPGP that addresses the problem of detecting a modification to
- * encrypted data. It is used in combination with a Modification Detection Code
- * packet.
- * @memberof module:packet
- * @constructor
- */
 function SymEncryptedIntegrityProtected() {
   this.tag = _enums2.default.packet.symEncryptedIntegrityProtected;
   this.version = VERSION;
@@ -38468,23 +38345,14 @@ SymEncryptedIntegrityProtected.prototype.write = function () {
 SymEncryptedIntegrityProtected.prototype.encrypt = async function (sessionKeyAlgorithm, key, streaming) {
   let bytes = this.packets.write();
   if (!streaming) bytes = await _webStreamTools2.default.readToEnd(bytes);
-  const prefixrandom = await _crypto2.default.getPrefixRandom(sessionKeyAlgorithm);
-  const repeat = new Uint8Array([prefixrandom[prefixrandom.length - 2], prefixrandom[prefixrandom.length - 1]]);
-  const prefix = _util2.default.concat([prefixrandom, repeat]);
+  const prefix = await _crypto2.default.getPrefixRandom(sessionKeyAlgorithm);
   const mdc = new Uint8Array([0xD3, 0x14]); // modification detection code packet
 
-  let tohash = _util2.default.concat([bytes, mdc]);
-  const hash = await _crypto2.default.hash.sha1(_util2.default.concat([prefix, _webStreamTools2.default.passiveClone(tohash)]));
-  tohash = _util2.default.concat([tohash, hash]);
+  const tohash = _util2.default.concat([prefix, bytes, mdc]);
+  const hash = await _crypto2.default.hash.sha1(_webStreamTools2.default.passiveClone(tohash));
+  const plaintext = _util2.default.concat([tohash, hash]);
 
-  if (sessionKeyAlgorithm.substr(0, 3) === 'aes') {
-    // AES optimizations. Native code for node, asmCrypto for browser.
-    this.encrypted = aesEncrypt(sessionKeyAlgorithm, _util2.default.concat([prefix, tohash]), key);
-  } else {
-    tohash = await _webStreamTools2.default.readToEnd(tohash);
-    this.encrypted = _crypto2.default.cfb.encrypt(prefixrandom, sessionKeyAlgorithm, tohash, key, false);
-    this.encrypted = _webStreamTools2.default.slice(this.encrypted, 0, prefix.length + tohash.length);
-  }
+  this.encrypted = await _crypto2.default.cfb.encrypt(sessionKeyAlgorithm, key, plaintext, new Uint8Array(_crypto2.default.cipher[sessionKeyAlgorithm].blockSize));
   return true;
 };
 
@@ -38499,29 +38367,20 @@ SymEncryptedIntegrityProtected.prototype.encrypt = async function (sessionKeyAlg
 SymEncryptedIntegrityProtected.prototype.decrypt = async function (sessionKeyAlgorithm, key, streaming) {
   if (!streaming) this.encrypted = await _webStreamTools2.default.readToEnd(this.encrypted);
   const encrypted = _webStreamTools2.default.clone(this.encrypted);
-  const encryptedClone = _webStreamTools2.default.passiveClone(encrypted);
-  let decrypted;
-  if (sessionKeyAlgorithm.substr(0, 3) === 'aes') {
-    // AES optimizations. Native code for node, asmCrypto for browser.
-    decrypted = aesDecrypt(sessionKeyAlgorithm, encrypted, key, streaming);
-  } else {
-    decrypted = _crypto2.default.cfb.decrypt(sessionKeyAlgorithm, key, (await _webStreamTools2.default.readToEnd(encrypted)), false);
-  }
+  const decrypted = await _crypto2.default.cfb.decrypt(sessionKeyAlgorithm, key, encrypted, new Uint8Array(_crypto2.default.cipher[sessionKeyAlgorithm].blockSize));
 
   // there must be a modification detection code packet as the
   // last packet and everything gets hashed except the hash itself
-  const encryptedPrefix = await _webStreamTools2.default.readToEnd(_webStreamTools2.default.slice(encryptedClone, 0, _crypto2.default.cipher[sessionKeyAlgorithm].blockSize + 2));
-  const prefix = _crypto2.default.cfb.mdc(sessionKeyAlgorithm, key, encryptedPrefix);
   const realHash = _webStreamTools2.default.slice(_webStreamTools2.default.passiveClone(decrypted), -20);
-  const bytes = _webStreamTools2.default.slice(decrypted, 0, -20);
-  const tohash = _util2.default.concat([prefix, _webStreamTools2.default.passiveClone(bytes)]);
-  const verifyHash = Promise.all([_webStreamTools2.default.readToEnd((await _crypto2.default.hash.sha1(tohash))), _webStreamTools2.default.readToEnd(realHash)]).then(([hash, mdc]) => {
+  const tohash = _webStreamTools2.default.slice(decrypted, 0, -20);
+  const verifyHash = Promise.all([_webStreamTools2.default.readToEnd((await _crypto2.default.hash.sha1(_webStreamTools2.default.passiveClone(tohash)))), _webStreamTools2.default.readToEnd(realHash)]).then(([hash, mdc]) => {
     if (!_util2.default.equalsUint8Array(hash, mdc)) {
       throw new Error('Modification detected.');
     }
     return new Uint8Array();
   });
-  let packetbytes = _webStreamTools2.default.slice(bytes, 0, -2);
+  const bytes = _webStreamTools2.default.slice(tohash, _crypto2.default.cipher[sessionKeyAlgorithm].blockSize + 2); // Remove random prefix
+  let packetbytes = _webStreamTools2.default.slice(bytes, 0, -2); // Remove MDC packet
   packetbytes = _webStreamTools2.default.concat([packetbytes, _webStreamTools2.default.fromAsync(() => verifyHash)]);
   if (!_util2.default.isStream(encrypted) || !_config2.default.allow_unauthenticated_stream) {
     packetbytes = await _webStreamTools2.default.readToEnd(packetbytes);
@@ -38532,54 +38391,7 @@ SymEncryptedIntegrityProtected.prototype.decrypt = async function (sessionKeyAlg
 
 exports.default = SymEncryptedIntegrityProtected;
 
-//////////////////////////
-//                      //
-//   Helper functions   //
-//                      //
-//////////////////////////
-
-
-function aesEncrypt(algo, pt, key) {
-  if (nodeCrypto) {
-    // Node crypto library.
-    return nodeEncrypt(algo, pt, key);
-  } // asm.js fallback
-  const cfb = new _cfb.AES_CFB(key);
-  return _webStreamTools2.default.transform(pt, value => cfb.AES_Encrypt_process(value), () => cfb.AES_Encrypt_finish());
-}
-
-function aesDecrypt(algo, ct, key) {
-  let pt;
-  if (nodeCrypto) {
-    // Node crypto library.
-    pt = nodeDecrypt(algo, ct, key);
-  } else {
-    // asm.js fallback
-    if (_util2.default.isStream(ct)) {
-      const cfb = new _cfb.AES_CFB(key);
-      pt = _webStreamTools2.default.transform(ct, value => cfb.AES_Decrypt_process(value), () => cfb.AES_Decrypt_finish());
-    } else {
-      pt = _cfb.AES_CFB.decrypt(ct, key);
-    }
-  }
-  return _webStreamTools2.default.slice(pt, _crypto2.default.cipher[algo].blockSize + 2); // Remove random prefix
-}
-
-function nodeEncrypt(algo, pt, key) {
-  key = new Buffer(key);
-  const iv = new Buffer(new Uint8Array(_crypto2.default.cipher[algo].blockSize));
-  const cipherObj = new nodeCrypto.createCipheriv('aes-' + algo.substr(3, 3) + '-cfb', key, iv);
-  return _webStreamTools2.default.transform(pt, value => new Uint8Array(cipherObj.update(new Buffer(value))));
-}
-
-function nodeDecrypt(algo, ct, key) {
-  key = new Buffer(key);
-  const iv = new Buffer(new Uint8Array(_crypto2.default.cipher[algo].blockSize));
-  const decipherObj = new nodeCrypto.createDecipheriv('aes-' + algo.substr(3, 3) + '-cfb', key, iv);
-  return _webStreamTools2.default.transform(ct, value => new Uint8Array(decipherObj.update(new Buffer(value))));
-}
-
-},{"../config":81,"../crypto":96,"../enums":115,"../util":154,"asmcrypto.js/dist_es5/aes/cfb":6,"web-stream-tools":77}],141:[function(require,module,exports){
+},{"../config":81,"../crypto":96,"../enums":115,"../util":154,"web-stream-tools":77}],141:[function(require,module,exports){
 'use strict';
 
 Object.defineProperty(exports, "__esModule", {
@@ -38745,7 +38557,7 @@ SymEncryptedSessionKey.prototype.decrypt = async function (passphrase) {
     const modeInstance = await mode(algo, key);
     this.sessionKey = await modeInstance.decrypt(this.encrypted, this.iv, adata);
   } else if (this.encrypted !== null) {
-    const decrypted = _crypto2.default.cfb.normalDecrypt(algo, key, this.encrypted, null);
+    const decrypted = await _crypto2.default.cfb.decrypt(algo, key, this.encrypted, new Uint8Array(_crypto2.default.cipher[algo].blockSize));
 
     this.sessionKeyAlgorithm = _enums2.default.read(_enums2.default.symmetric, decrypted[0]);
     this.sessionKey = decrypted.subarray(1, decrypted.length);
@@ -38786,7 +38598,7 @@ SymEncryptedSessionKey.prototype.encrypt = async function (passphrase) {
   } else {
     const algo_enum = new Uint8Array([_enums2.default.write(_enums2.default.symmetric, this.sessionKeyAlgorithm)]);
     const private_key = _util2.default.concatUint8Array([algo_enum, this.sessionKey]);
-    this.encrypted = _crypto2.default.cfb.normalEncrypt(algo, key, private_key, null);
+    this.encrypted = await _crypto2.default.cfb.encrypt(algo, key, private_key, new Uint8Array(_crypto2.default.cipher[algo].blockSize));
   }
 
   return true;
@@ -38824,6 +38636,10 @@ var _enums = require('../enums');
 
 var _enums2 = _interopRequireDefault(_enums);
 
+var _util = require('../util');
+
+var _util2 = _interopRequireDefault(_util);
+
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
 
 /**
@@ -38838,7 +38654,27 @@ function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { de
  * @memberof module:packet
  * @constructor
  */
-// GPG4Browsers - An OpenPGP implementation in javascript
+function SymmetricallyEncrypted() {
+  /**
+   * Packet type
+   * @type {module:enums.packet}
+   */
+  this.tag = _enums2.default.packet.symmetricallyEncrypted;
+  /**
+   * Encrypted secret-key data
+   */
+  this.encrypted = null;
+  /**
+   * Decrypted packets contained within.
+   * @type {module:packet.List}
+   */
+  this.packets = null;
+  /**
+   * When true, decrypt fails if message is not integrity protected
+   * @see module:config.ignore_mdc_error
+   */
+  this.ignore_mdc_error = _config2.default.ignore_mdc_error;
+} // GPG4Browsers - An OpenPGP implementation in javascript
 // Copyright (C) 2011 Recurity Labs GmbH
 //
 // This library is free software; you can redistribute it and/or
@@ -38860,29 +38696,8 @@ function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { de
  * @requires config
  * @requires crypto
  * @requires enums
+ * @requires util
  */
-
-function SymmetricallyEncrypted() {
-  /**
-   * Packet type
-   * @type {module:enums.packet}
-   */
-  this.tag = _enums2.default.packet.symmetricallyEncrypted;
-  /**
-   * Encrypted secret-key data
-   */
-  this.encrypted = null;
-  /**
-   * Decrypted packets contained within.
-   * @type {module:packet.List}
-   */
-  this.packets = null;
-  /**
-   * When true, decrypt fails if message is not integrity protected
-   * @see module:config.ignore_mdc_error
-   */
-  this.ignore_mdc_error = _config2.default.ignore_mdc_error;
-}
 
 SymmetricallyEncrypted.prototype.read = function (bytes) {
   this.encrypted = bytes;
@@ -38902,7 +38717,8 @@ SymmetricallyEncrypted.prototype.write = function () {
  */
 SymmetricallyEncrypted.prototype.decrypt = async function (sessionKeyAlgorithm, key) {
   this.encrypted = await _webStreamTools2.default.readToEnd(this.encrypted);
-  const decrypted = _crypto2.default.cfb.decrypt(sessionKeyAlgorithm, key, this.encrypted, true);
+  const decrypted = await _crypto2.default.cfb.decrypt(sessionKeyAlgorithm, key, this.encrypted.subarray(_crypto2.default.cipher[sessionKeyAlgorithm].blockSize + 2), this.encrypted.subarray(2, _crypto2.default.cipher[sessionKeyAlgorithm].blockSize + 2));
+
   // If MDC errors are not being ignored, all missing MDC packets in symmetrically encrypted data should throw an error
   if (!this.ignore_mdc_error) {
     throw new Error('Decryption failed due to missing MDC.');
@@ -38923,14 +38739,17 @@ SymmetricallyEncrypted.prototype.decrypt = async function (sessionKeyAlgorithm, 
 SymmetricallyEncrypted.prototype.encrypt = async function (algo, key) {
   const data = this.packets.write();
 
-  this.encrypted = _crypto2.default.cfb.encrypt((await _crypto2.default.getPrefixRandom(algo)), algo, (await _webStreamTools2.default.readToEnd(data)), key, true);
+  const prefix = await _crypto2.default.getPrefixRandom(algo);
+  const FRE = await _crypto2.default.cfb.encrypt(algo, key, prefix, new Uint8Array(_crypto2.default.cipher[algo].blockSize));
+  const ciphertext = await _crypto2.default.cfb.encrypt(algo, key, data, FRE.subarray(2));
+  this.encrypted = _util2.default.concatUint8Array([FRE, ciphertext]);
 
   return true;
 };
 
 exports.default = SymmetricallyEncrypted;
 
-},{"../config":81,"../crypto":96,"../enums":115,"web-stream-tools":77}],143:[function(require,module,exports){
+},{"../config":81,"../crypto":96,"../enums":115,"../util":154,"web-stream-tools":77}],143:[function(require,module,exports){
 'use strict';
 
 Object.defineProperty(exports, "__esModule", {
@@ -40342,7 +40161,7 @@ exports.default = {
   },
 
   normalizeDate: function normalizeDate(time = Date.now()) {
-    return time === null ? time : new Date(Math.floor(+time / 1000) * 1000);
+    return time === null || time === Infinity ? time : new Date(Math.floor(+time / 1000) * 1000);
   },
 
   /**
