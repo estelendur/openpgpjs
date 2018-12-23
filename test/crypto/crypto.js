@@ -277,11 +277,12 @@ describe('API functional testing', function() {
       return algo !== 'idea' && algo !== 'plaintext';
     });
 
-    function testCFB(plaintext, resync) {
+    function testCFB(plaintext) {
       symmAlgos.forEach(async function(algo) {
         const symmKey = await crypto.generateSessionKey(algo);
-        const symmencData = crypto.cfb.encrypt(await crypto.getPrefixRandom(algo), algo, util.str_to_Uint8Array(plaintext), symmKey, resync);
-        const text = util.Uint8Array_to_str(crypto.cfb.decrypt(algo, symmKey, symmencData, resync));
+        const IV = new Uint8Array(crypto.cipher[algo].blockSize);
+        const symmencData = await crypto.cfb.encrypt(algo, symmKey, util.str_to_Uint8Array(plaintext), IV);
+        const text = util.Uint8Array_to_str(await crypto.cfb.decrypt(algo, symmKey, symmencData, new Uint8Array(crypto.cipher[algo].blockSize)));
         expect(text).to.equal(plaintext);
       });
     }
@@ -290,13 +291,10 @@ describe('API functional testing', function() {
       symmAlgos.forEach(async function(algo) {
         if(algo.substr(0,3) === 'aes') {
           const symmKey = await crypto.generateSessionKey(algo);
-          const rndm = await crypto.getPrefixRandom(algo);
+          const IV = new Uint8Array(crypto.cipher[algo].blockSize)
 
-          const repeat = new Uint8Array([rndm[rndm.length - 2], rndm[rndm.length - 1]]);
-          const prefix = util.concatUint8Array([rndm, repeat]);
-
-          const symmencData = crypto.cfb.encrypt(rndm, algo, util.str_to_Uint8Array(plaintext), symmKey, false);
-          const decrypted = crypto.cfb.decrypt(algo, symmKey, symmencData, false);
+          const symmencData = await crypto.cfb.encrypt(algo, symmKey, util.str_to_Uint8Array(plaintext), IV);
+          const decrypted = await crypto.cfb.decrypt(algo, symmKey, symmencData, new Uint8Array(crypto.cipher[algo].blockSize));
 
           const text = util.Uint8Array_to_str(decrypted);
           expect(text).to.equal(plaintext);
@@ -325,21 +323,14 @@ describe('API functional testing', function() {
       });
     }
 
-    it("Symmetric with OpenPGP CFB resync", function () {
-      testCFB("hello", true);
-      testCFB("1234567", true);
-      testCFB("foobarfoobar1234567890", true);
-      testCFB("12345678901234567890123456789012345678901234567890", true);
+    it("Symmetric with OpenPGP CFB", function () {
+      testCFB("hello");
+      testCFB("1234567");
+      testCFB("foobarfoobar1234567890");
+      testCFB("12345678901234567890123456789012345678901234567890");
     });
 
-    it("Symmetric without OpenPGP CFB resync", function () {
-      testCFB("hello", false);
-      testCFB("1234567", false);
-      testCFB("foobarfoobar1234567890", false);
-      testCFB("12345678901234567890123456789012345678901234567890", false);
-    });
-
-    it("asmCrypto AES without OpenPGP CFB resync", function () {
+    it("asmCrypto AES with OpenPGP CFB", function () {
       testAESCFB("hello");
       testAESCFB("1234567");
       testAESCFB("foobarfoobar1234567890");
